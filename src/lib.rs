@@ -1,10 +1,15 @@
-use std::{pin::Pin, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
 
-use tokio::time::Instant;
+use tokio::time::{Instant, Sleep};
 
 /// Timer for a limited set of events that are represented by their ordinals.
-/// It multiplexes over a single `tokio::time::Sleep`.
-/// Deadlines for the same event are coalesced to the soonest one that has not yet fired.
+/// It multiplexes over a single tokio [Sleep] instance.
+/// Deadlines for the same event are coalesced to the sooner one if it has not yet fired.
 ///
 /// Deadlines are stored on a stack-allocated array of size `N`, and the ordinals are used to index into it,
 /// so the maximum supported ordinal will be `N - 1`. The implementation is designed for small `N` (think single digits).
@@ -13,13 +18,12 @@ use tokio::time::Instant;
 #[derive(Debug)]
 pub struct MuxTimer<const N: usize> {
     deadlines: [Option<Instant>; N],
-    sleep: Pin<Box<tokio::time::Sleep>>,
+    sleep: Pin<Box<Sleep>>,
     armed: bool,
 }
 
 impl<const N: usize> Default for MuxTimer<N> {
     fn default() -> Self {
-        assert!(N < 16, "not designed for large N");
         Self {
             deadlines: [None; N],
             sleep: Box::pin(tokio::time::sleep(Duration::ZERO)),
@@ -57,21 +61,18 @@ impl<const N: usize> MuxTimer<N> {
         self.armed = true;
     }
 
-    /// Returns `true` if the timer is armed.
+    /// Returns whether the timer is armed.
     pub fn is_armed(&self) -> bool {
         self.armed
     }
 
-    /// Returns the deadline of the next event, if armed.
+    /// Returns the next deadline, if armed.
     pub fn deadline(&self) -> Option<Instant> {
         self.armed.then(|| self.sleep.deadline())
     }
 
-    /// Waits for the next event and returns its ordinal.
-    /// Panics if the timer is not armed.
-    pub async fn next_event(&mut self) -> usize {
+    fn woke(&mut self) -> usize {
         let armed_deadline = self.deadline().expect("armed");
-        self.sleep.as_mut().await;
         let mut ordinal = None;
         let mut next_deadline = None;
         for i in 0..self.deadlines.len() {
@@ -93,9 +94,24 @@ impl<const N: usize> MuxTimer<N> {
     }
 }
 
+/// Wait for the next event and return its ordinal.
+/// Panics if the timer is not armed.
+impl<const N: usize> Future for MuxTimer<N> {
+    type Output = usize;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.sleep.as_mut().poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(_) => Poll::Ready(self.woke()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    use tokio::pin;
 
     use super::MuxTimer;
 
@@ -111,10 +127,12 @@ mod tests {
         assert!(timer.fire_after(EVENT_A, Duration::from_millis(100)));
         assert!(timer.fire_after(EVENT_B, Duration::from_millis(50)));
 
-        let event = timer.next_event().await;
+        pin!(timer);
+
+        let event = timer.as_mut().await;
         assert_eq!(event, EVENT_B);
 
-        let event = timer.next_event().await;
+        let event = timer.as_mut().await;
         assert_eq!(event, EVENT_A);
         assert_eq!(timer.deadline(), None);
     }
@@ -128,7 +146,9 @@ mod tests {
         assert!(!timer.fire_after(EVENT_A, Duration::from_millis(200)));
         assert!(timer.fire_after(EVENT_A, Duration::from_millis(50)));
 
-        let event = timer.next_event().await;
+        pin!(timer);
+
+        let event = timer.as_mut().await;
         assert_eq!(event, EVENT_A);
         assert_eq!(timer.deadline(), None);
     }
