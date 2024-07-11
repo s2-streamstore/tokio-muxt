@@ -1,32 +1,40 @@
 use std::{pin::Pin, time::Duration};
 
-use ordinal_map::{map::OrdinalArrayMap, Ordinal};
 use tokio::time::Instant;
+
+pub trait OrdEvent: Sized {
+    const NUM_EVENTS: usize;
+
+    /// Ordinal of the event.
+    fn ordinal(&self) -> usize;
+
+    /// Event from ordinal.
+    fn from_ordinal(ordinal: usize) -> Option<Self>;
+}
 
 /// A multiplexed timer for a limited set of events.
 /// Deadlines for the same event are coalesced to the soonest one that has not yet fired.
-///
-/// Events must implement [ordinal_map::Ordinal].
-/// The S type parameter is the number of ordinals and should be specified as { E::ORDINAL_SIZE }.
-/// It can be removed after https://github.com/rust-lang/rust/issues/76560.
 #[derive(Debug)]
-pub struct MuxSleep<E: Ordinal + std::fmt::Debug, const S: usize> {
-    deadlines: OrdinalArrayMap<E, Instant, S>,
+pub struct MuxSleep<E: OrdEvent, const N: usize> {
+    deadlines: [Option<Instant>; N],
     sleep: Pin<Box<tokio::time::Sleep>>,
     armed: bool,
+    _phantom: std::marker::PhantomData<E>,
 }
 
-impl<E: Ordinal + std::fmt::Debug, const S: usize> Default for MuxSleep<E, S> {
+impl<E: OrdEvent, const N: usize> Default for MuxSleep<E, N> {
     fn default() -> Self {
+        assert_eq!(E::NUM_EVENTS, N);
         Self {
-            deadlines: OrdinalArrayMap::new(),
+            deadlines: [None; N],
             sleep: Box::pin(tokio::time::sleep(Duration::ZERO)),
             armed: false,
+            _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<E: Ordinal + std::fmt::Debug, const S: usize> MuxSleep<E, S> {
+impl<E: OrdEvent, const N: usize> MuxSleep<E, N> {
     /// Fire timer for `event` after `timeout` duration.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event with sooner deadline.
     pub fn fire_after(&mut self, event: E, timeout: Duration) -> bool {
@@ -36,14 +44,14 @@ impl<E: Ordinal + std::fmt::Debug, const S: usize> MuxSleep<E, S> {
     /// Fire timer for `event` at `deadline`.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event with sooner deadline.
     pub fn fire_at(&mut self, event: E, deadline: Instant) -> bool {
-        if let Some(existing_deadline) = self.deadlines.get_mut(&event) {
+        let ord = event.ordinal();
+        if let Some(existing_deadline) = &mut self.deadlines[ord] {
             if *existing_deadline < deadline {
-                // already armed with sooner deadline
                 return false;
             }
             *existing_deadline = deadline;
         } else {
-            self.deadlines.insert(event, deadline);
+            self.deadlines[ord] = Some(deadline);
         }
         if !self.deadline().is_some_and(|d| d > self.sleep.deadline()) {
             self.arm(deadline);
@@ -71,23 +79,25 @@ impl<E: Ordinal + std::fmt::Debug, const S: usize> MuxSleep<E, S> {
     pub async fn next_event(&mut self) -> E {
         let armed_deadline = self.deadline().expect("armed");
         self.sleep.as_mut().await;
-        let mut found_event = None;
+        let mut event_idx = None;
         let mut next_deadline = None;
-        for (event, deadline) in &self.deadlines {
-            if found_event.is_none() && *deadline <= armed_deadline {
-                found_event = Some(event);
-            } else if !next_deadline.is_some_and(|d| d >= *deadline) {
-                next_deadline = Some(*deadline);
+        for i in 0..self.deadlines.len() {
+            if let Some(deadline) = self.deadlines[i] {
+                if event_idx.is_none() && deadline <= armed_deadline {
+                    self.deadlines[i] = None;
+                    event_idx = Some(i);
+                } else if !next_deadline.is_some_and(|d| d >= deadline) {
+                    next_deadline = Some(deadline);
+                }
             }
         }
-        let found_event = found_event.expect("cannot be armed without an event deadline");
-        self.deadlines.remove(&found_event);
         if let Some(deadline) = next_deadline {
             self.arm(deadline);
         } else {
             self.armed = false;
         }
-        found_event
+        E::from_ordinal(event_idx.expect("cannot be armed without an event deadline"))
+            .expect("valid ordinal")
     }
 }
 
@@ -95,44 +105,63 @@ impl<E: Ordinal + std::fmt::Debug, const S: usize> MuxSleep<E, S> {
 mod tests {
     use std::time::Duration;
 
-    use ordinal_map::Ordinal;
+    use crate::OrdEvent;
 
     use super::MuxSleep;
 
-    #[derive(Ordinal, Debug, PartialEq, Eq, PartialOrd, Ord)]
-    enum Event {
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+    enum SimpleEvent {
         A,
         B,
+    }
+
+    impl OrdEvent for SimpleEvent {
+        const NUM_EVENTS: usize = 2;
+
+        fn ordinal(&self) -> usize {
+            match self {
+                SimpleEvent::A => 0,
+                SimpleEvent::B => 1,
+            }
+        }
+
+        fn from_ordinal(ordinal: usize) -> Option<Self> {
+            match ordinal {
+                0 => Some(SimpleEvent::A),
+                1 => Some(SimpleEvent::B),
+                _ => None,
+            }
+        }
     }
 
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn firing_order() {
-        let mut timer: MuxSleep<Event, { Event::ORDINAL_SIZE }> = MuxSleep::default();
+        let mut timer: MuxSleep<SimpleEvent, { SimpleEvent::NUM_EVENTS }> = MuxSleep::default();
         assert_eq!(timer.deadline(), None);
 
-        assert!(timer.fire_after(Event::A, Duration::from_millis(100)));
-        assert!(timer.fire_after(Event::B, Duration::from_millis(50)));
+        assert!(timer.fire_after(SimpleEvent::A, Duration::from_millis(100)));
+        assert!(timer.fire_after(SimpleEvent::B, Duration::from_millis(50)));
 
         let event = timer.next_event().await;
-        assert_eq!(event, Event::B);
+        assert_eq!(event, SimpleEvent::B);
 
         let event = timer.next_event().await;
-        assert_eq!(event, Event::A);
+        assert_eq!(event, SimpleEvent::A);
         assert_eq!(timer.deadline(), None);
     }
 
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn rearming() {
-        let mut timer: MuxSleep<Event, { Event::ORDINAL_SIZE }> = MuxSleep::default();
+        let mut timer: MuxSleep<SimpleEvent, { SimpleEvent::NUM_EVENTS }> = MuxSleep::default();
 
-        assert!(timer.fire_after(Event::A, Duration::from_millis(100)));
-        assert!(!timer.fire_after(Event::A, Duration::from_millis(200)));
-        assert!(timer.fire_after(Event::A, Duration::from_millis(50)));
+        assert!(timer.fire_after(SimpleEvent::A, Duration::from_millis(100)));
+        assert!(!timer.fire_after(SimpleEvent::A, Duration::from_millis(200)));
+        assert!(timer.fire_after(SimpleEvent::A, Duration::from_millis(50)));
 
         let event = timer.next_event().await;
-        assert_eq!(event, Event::A);
+        assert_eq!(event, SimpleEvent::A);
         assert_eq!(timer.deadline(), None);
     }
 }
