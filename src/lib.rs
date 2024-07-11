@@ -2,20 +2,22 @@ use std::{pin::Pin, time::Duration};
 
 use tokio::time::Instant;
 
-/// A multiplexed timer for a limited set of events represented by their ordinals.
+/// Timer for a limited set of events that are represented by their ordinals.
+/// It multiplexes over a single `tokio::time::Sleep`.
 /// Deadlines for the same event are coalesced to the soonest one that has not yet fired.
 ///
-/// `N` signifies the number of events, and the maximum supported ordinal will be `N - 1`.
+/// Deadlines are stored on a stack-allocated array of size `N`, and the ordinals are used to index into it,
+/// so the maximum supported ordinal will be `N - 1`. The implementation is designed for small `N` (think single digits).
 ///
 /// Mapping between ordinals and events is up to the user.
 #[derive(Debug)]
-pub struct MuxSleep<const N: usize> {
+pub struct MuxTimer<const N: usize> {
     deadlines: [Option<Instant>; N],
     sleep: Pin<Box<tokio::time::Sleep>>,
     armed: bool,
 }
 
-impl<const N: usize> Default for MuxSleep<N> {
+impl<const N: usize> Default for MuxTimer<N> {
     fn default() -> Self {
         assert!(N < 16, "not designed for large N");
         Self {
@@ -26,7 +28,7 @@ impl<const N: usize> Default for MuxSleep<N> {
     }
 }
 
-impl<const N: usize> MuxSleep<N> {
+impl<const N: usize> MuxTimer<N> {
     /// Fire timer for event with `ordinal` after `timeout` duration.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event with sooner deadline.
     pub fn fire_after(&mut self, ordinal: usize, timeout: Duration) -> bool {
@@ -95,7 +97,7 @@ impl<const N: usize> MuxSleep<N> {
 mod tests {
     use std::time::Duration;
 
-    use super::MuxSleep;
+    use super::MuxTimer;
 
     const EVENT_A: usize = 0;
     const EVENT_B: usize = 1;
@@ -103,7 +105,7 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn firing_order() {
-        let mut timer: MuxSleep<2> = MuxSleep::default();
+        let mut timer: MuxTimer<2> = MuxTimer::default();
         assert_eq!(timer.deadline(), None);
 
         assert!(timer.fire_after(EVENT_A, Duration::from_millis(100)));
@@ -120,7 +122,7 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn rearming() {
-        let mut timer: MuxSleep<2> = MuxSleep::default();
+        let mut timer: MuxTimer<2> = MuxTimer::default();
 
         assert!(timer.fire_after(EVENT_A, Duration::from_millis(100)));
         assert!(!timer.fire_after(EVENT_A, Duration::from_millis(200)));
