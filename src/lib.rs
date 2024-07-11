@@ -35,13 +35,14 @@ impl<const N: usize> Default for MuxTimer<N> {
 impl<const N: usize> MuxTimer<N> {
     /// Fire timer for event with `ordinal` after `timeout` duration.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event with sooner deadline.
-    pub fn fire_after(&mut self, ordinal: usize, timeout: Duration) -> bool {
+    pub fn fire_after(&mut self, ordinal: impl Into<usize>, timeout: Duration) -> bool {
         self.fire_at(ordinal, Instant::now() + timeout)
     }
 
     /// Fire timer for event with `ordinal` at `deadline`.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event with sooner deadline.
-    pub fn fire_at(&mut self, ordinal: usize, deadline: Instant) -> bool {
+    pub fn fire_at(&mut self, ordinal: impl Into<usize>, deadline: Instant) -> bool {
+        let ordinal = ordinal.into();
         if let Some(existing_deadline) = &mut self.deadlines[ordinal] {
             if *existing_deadline < deadline {
                 return false;
