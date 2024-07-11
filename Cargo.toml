@@ -1,0 +1,11 @@
+[package]
+name = "muxt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.38.0", features = ["time", "test-util"] }
+ordinal-map = "0.1.6"
+
+[dev-dependencies]
+tokio = { version = "1.38.0", features = ["full"] }
