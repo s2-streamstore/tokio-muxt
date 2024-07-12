@@ -51,7 +51,7 @@ impl<const N: usize> MuxTimer<N> {
         } else {
             self.deadlines[ordinal] = Some(deadline);
         }
-        if !self.deadline().is_some_and(|d| d > self.sleep.deadline()) {
+        if is_sooner(deadline, self.deadline()) {
             self.arm(deadline);
         }
         true
@@ -80,7 +80,7 @@ impl<const N: usize> MuxTimer<N> {
                 if ordinal.is_none() && deadline <= at {
                     self.deadlines[i] = None;
                     ordinal = Some(i);
-                } else if !next_deadline.is_some_and(|d| d >= deadline) {
+                } else if is_sooner(deadline, next_deadline) {
                     next_deadline = Some(deadline);
                 }
             }
@@ -92,18 +92,21 @@ impl<const N: usize> MuxTimer<N> {
     }
 }
 
+fn is_sooner(candidate: Instant, current: Option<Instant>) -> bool {
+    current.map_or(true, |current| candidate < current)
+}
+
 /// Wait for the next event and return its ordinal.
 /// Panics if the timer is not armed.
 impl<const N: usize> Future for MuxTimer<N> {
     type Output = usize;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        assert!(self.armed);
+        let deadline = self.deadline().expect("armed");
         match self.sleep.as_mut().poll(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(_) => {
                 self.armed = false;
-                let deadline = self.sleep.deadline();
                 Poll::Ready(self.fired(deadline))
             }
         }
@@ -120,15 +123,17 @@ mod tests {
 
     const EVENT_A: usize = 0;
     const EVENT_B: usize = 1;
+    const EVENT_C: usize = 2;
 
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn firing_order() {
-        let mut timer: MuxTimer<2> = MuxTimer::default();
+        let mut timer: MuxTimer<3> = MuxTimer::default();
         assert_eq!(timer.deadline(), None);
 
-        assert!(timer.fire_after(EVENT_A, Duration::from_millis(100)));
+        assert!(timer.fire_after(EVENT_C, Duration::from_millis(100)));
         assert!(timer.fire_after(EVENT_B, Duration::from_millis(50)));
+        assert!(timer.fire_after(EVENT_A, Duration::from_millis(150)));
 
         pin!(timer);
 
@@ -136,14 +141,18 @@ mod tests {
         assert_eq!(event, EVENT_B);
 
         let event = timer.as_mut().await;
+        assert_eq!(event, EVENT_C);
+
+        let event = timer.as_mut().await;
         assert_eq!(event, EVENT_A);
+
         assert_eq!(timer.deadline(), None);
     }
 
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn rearming() {
-        let mut timer: MuxTimer<2> = MuxTimer::default();
+        let mut timer: MuxTimer<3> = MuxTimer::default();
 
         assert!(timer.fire_after(EVENT_A, Duration::from_millis(100)));
         assert!(!timer.fire_after(EVENT_A, Duration::from_millis(200)));
