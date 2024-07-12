@@ -72,13 +72,12 @@ impl<const N: usize> MuxTimer<N> {
         self.armed.then(|| self.sleep.deadline())
     }
 
-    fn woke(&mut self) -> usize {
-        let armed_deadline = self.deadline().expect("armed");
+    fn fired(&mut self, at: Instant) -> usize {
         let mut ordinal = None;
         let mut next_deadline = None;
         for i in 0..self.deadlines.len() {
             if let Some(deadline) = self.deadlines[i] {
-                if ordinal.is_none() && deadline <= armed_deadline {
+                if ordinal.is_none() && deadline <= at {
                     self.deadlines[i] = None;
                     ordinal = Some(i);
                 } else if !next_deadline.is_some_and(|d| d >= deadline) {
@@ -88,8 +87,6 @@ impl<const N: usize> MuxTimer<N> {
         }
         if let Some(deadline) = next_deadline {
             self.arm(deadline);
-        } else {
-            self.armed = false;
         }
         ordinal.expect("cannot be armed without an event deadline")
     }
@@ -101,9 +98,14 @@ impl<const N: usize> Future for MuxTimer<N> {
     type Output = usize;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        assert!(self.armed);
         match self.sleep.as_mut().poll(cx) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(_) => Poll::Ready(self.woke()),
+            Poll::Ready(_) => {
+                self.armed = false;
+                let deadline = self.sleep.deadline();
+                Poll::Ready(self.fired(deadline))
+            }
         }
     }
 }
