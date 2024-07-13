@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     pin::Pin,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
     time::Duration,
 };
 
@@ -19,7 +19,7 @@ use tokio::time::{Instant, Sleep};
 pub struct MuxTimer<const N: usize> {
     deadlines: [Option<Instant>; N],
     sleep: Pin<Box<Sleep>>,
-    armed: bool,
+    armed_ordinal: usize,
 }
 
 impl<const N: usize> Default for MuxTimer<N> {
@@ -27,7 +27,7 @@ impl<const N: usize> Default for MuxTimer<N> {
         Self {
             deadlines: [None; N],
             sleep: Box::pin(tokio::time::sleep(Duration::ZERO)),
-            armed: false,
+            armed_ordinal: N,
         }
     }
 }
@@ -35,8 +35,8 @@ impl<const N: usize> Default for MuxTimer<N> {
 impl<const N: usize> MuxTimer<N> {
     /// Fire timer for event with `ordinal` after `timeout` duration.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event with sooner deadline.
-    pub fn fire_after(&mut self, ordinal: impl Into<usize>, timeout: Duration) -> bool {
-        self.fire_at(ordinal, Instant::now() + timeout)
+    pub fn fire_after(&mut self, ord: impl Into<usize>, timeout: Duration) -> bool {
+        self.fire_at(ord, Instant::now() + timeout)
     }
 
     /// Fire timer for event with `ordinal` at `deadline`.
@@ -51,49 +51,39 @@ impl<const N: usize> MuxTimer<N> {
         } else {
             self.deadlines[ordinal] = Some(deadline);
         }
-        if is_sooner(deadline, self.deadline()) {
-            self.arm(deadline);
+        if self.deadline().map_or(true, |d| deadline < d) {
+            self.arm(ordinal, deadline);
         }
         true
     }
 
-    fn arm(&mut self, deadline: Instant) {
+    fn arm(&mut self, ordinal: usize, deadline: Instant) {
         self.sleep.as_mut().reset(deadline);
-        self.armed = true;
+        self.armed_ordinal = ordinal;
     }
 
     /// Returns whether the timer is armed.
     pub fn is_armed(&self) -> bool {
-        self.armed
+        self.armed_ordinal < N
     }
 
     /// Returns the next deadline, if armed.
     pub fn deadline(&self) -> Option<Instant> {
-        self.armed.then(|| self.sleep.deadline())
+        (self.armed_ordinal < N).then(|| self.sleep.deadline())
     }
 
-    fn fired(&mut self, at: Instant) -> usize {
-        let mut ordinal = None;
-        let mut next_deadline = None;
-        for i in 0..self.deadlines.len() {
-            if let Some(deadline) = self.deadlines[i] {
-                if ordinal.is_none() && deadline <= at {
-                    self.deadlines[i] = None;
-                    ordinal = Some(i);
-                } else if is_sooner(deadline, next_deadline) {
-                    next_deadline = Some(deadline);
-                }
-            }
-        }
-        if let Some(deadline) = next_deadline {
-            self.arm(deadline);
-        }
-        ordinal.expect("cannot be armed without an event deadline")
+    /// Returns all current deadlines, which can be indexed by event ordinals.
+    pub fn deadlines(&self) -> &[Option<Instant>; N] {
+        &self.deadlines
     }
-}
 
-fn is_sooner(candidate: Instant, current: Option<Instant>) -> bool {
-    current.map_or(true, |current| candidate < current)
+    fn soonest_event(&self) -> Option<(usize, Instant)> {
+        self.deadlines
+            .iter()
+            .enumerate()
+            .filter_map(|(ordinal, slot)| slot.map(|deadline| (ordinal, deadline)))
+            .min_by(|(_, x), (_, y)| x.cmp(y))
+    }
 }
 
 /// Wait for the next event and return its ordinal.
@@ -102,14 +92,15 @@ impl<const N: usize> Future for MuxTimer<N> {
     type Output = usize;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let deadline = self.deadline().expect("armed");
-        match self.sleep.as_mut().poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(_) => {
-                self.armed = false;
-                Poll::Ready(self.fired(deadline))
-            }
+        assert!(self.armed_ordinal < N);
+        ready!(self.sleep.as_mut().poll(cx));
+        let fired_ordinal = std::mem::replace(&mut self.armed_ordinal, N);
+        let fired_deadline = self.deadlines[fired_ordinal].take().expect("armed");
+        assert_eq!(fired_deadline, self.sleep.deadline());
+        if let Some((ordinal, deadline)) = self.soonest_event() {
+            self.arm(ordinal, deadline);
         }
+        Poll::Ready(fired_ordinal)
     }
 }
 
