@@ -35,8 +35,8 @@ impl<const N: usize> Default for MuxTimer<N> {
 impl<const N: usize> MuxTimer<N> {
     /// Fire timer for event with `ordinal` after `timeout` duration.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event with sooner deadline.
-    pub fn fire_after(&mut self, ord: impl Into<usize>, timeout: Duration) -> bool {
-        self.fire_at(ord, Instant::now() + timeout)
+    pub fn fire_after(&mut self, ordinal: impl Into<usize>, timeout: Duration) -> bool {
+        self.fire_at(ordinal, Instant::now() + timeout)
     }
 
     /// Fire timer for event with `ordinal` at `deadline`.
