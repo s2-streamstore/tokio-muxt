@@ -5,6 +5,8 @@ use std::{
     time::Duration,
 };
 
+use pin_project::pin_project;
+
 use tokio::time::{Instant, Sleep};
 
 /// Timer for a limited set of events that are represented by their ordinals.
@@ -15,10 +17,12 @@ use tokio::time::{Instant, Sleep};
 /// so the maximum supported ordinal will be `N - 1`. The implementation is designed for small `N` (think single digits).
 ///
 /// Mapping between ordinals and events is up to the user.
+#[pin_project(project = MuxTimerProj)]
 #[derive(Debug)]
 pub struct MuxTimer<const N: usize> {
     deadlines: [Option<Instant>; N],
-    sleep: Pin<Box<Sleep>>,
+    #[pin]
+    sleep: Sleep,
     armed_ordinal: usize,
 }
 
@@ -26,7 +30,7 @@ impl<const N: usize> Default for MuxTimer<N> {
     fn default() -> Self {
         Self {
             deadlines: [None; N],
-            sleep: Box::pin(tokio::time::sleep(Duration::ZERO)),
+            sleep: tokio::time::sleep(Duration::ZERO),
             armed_ordinal: N,
         }
     }
@@ -35,31 +39,24 @@ impl<const N: usize> Default for MuxTimer<N> {
 impl<const N: usize> MuxTimer<N> {
     /// Fire timer for event with `ordinal` after `timeout` duration.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event with sooner deadline.
-    pub fn fire_after(&mut self, ordinal: impl Into<usize>, timeout: Duration) -> bool {
+    pub fn fire_after(self: Pin<&mut Self>, ordinal: impl Into<usize>, timeout: Duration) -> bool {
         self.fire_at(ordinal, Instant::now() + timeout)
     }
 
     /// Fire timer for event with `ordinal` at `deadline`.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event with sooner deadline.
-    pub fn fire_at(&mut self, ordinal: impl Into<usize>, deadline: Instant) -> bool {
+    pub fn fire_at(self: Pin<&mut Self>, ordinal: impl Into<usize>, deadline: Instant) -> bool {
         let ordinal = ordinal.into();
-        if let Some(existing_deadline) = &mut self.deadlines[ordinal] {
-            if *existing_deadline < deadline {
-                return false;
-            }
-            *existing_deadline = deadline;
-        } else {
-            self.deadlines[ordinal] = Some(deadline);
+        if self.deadlines[ordinal].is_some_and(|d| d < deadline) {
+            return false;
         }
-        if self.deadline().map_or(true, |d| deadline < d) {
-            self.arm(ordinal, deadline);
+        let current_deadline = self.deadline();
+        let mut this = self.project();
+        this.deadlines[ordinal] = Some(deadline);
+        if current_deadline.map_or(true, |d| deadline < d) {
+            this.arm(ordinal, deadline);
         }
         true
-    }
-
-    fn arm(&mut self, ordinal: usize, deadline: Instant) {
-        self.sleep.as_mut().reset(deadline);
-        self.armed_ordinal = ordinal;
     }
 
     /// Returns whether the timer is armed.
@@ -76,6 +73,13 @@ impl<const N: usize> MuxTimer<N> {
     pub fn deadlines(&self) -> &[Option<Instant>; N] {
         &self.deadlines
     }
+}
+
+impl<'pin, const N: usize> MuxTimerProj<'pin, N> {
+    fn arm(&mut self, ordinal: usize, deadline: Instant) {
+        self.sleep.as_mut().reset(deadline);
+        *self.armed_ordinal = ordinal;
+    }
 
     fn soonest_event(&self) -> Option<(usize, Instant)> {
         self.deadlines
@@ -91,14 +95,15 @@ impl<const N: usize> MuxTimer<N> {
 impl<const N: usize> Future for MuxTimer<N> {
     type Output = usize;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         assert!(self.armed_ordinal < N);
-        ready!(self.sleep.as_mut().poll(cx));
-        let fired_ordinal = std::mem::replace(&mut self.armed_ordinal, N);
-        let fired_deadline = self.deadlines[fired_ordinal].take().expect("armed");
-        assert_eq!(fired_deadline, self.sleep.deadline());
-        if let Some((ordinal, deadline)) = self.soonest_event() {
-            self.arm(ordinal, deadline);
+        let mut this = self.project();
+        ready!(this.sleep.as_mut().poll(cx));
+        let fired_ordinal = std::mem::replace(this.armed_ordinal, N);
+        let fired_deadline = this.deadlines[fired_ordinal].take().expect("armed");
+        assert_eq!(fired_deadline, this.sleep.deadline());
+        if let Some((ordinal, deadline)) = this.soonest_event() {
+            this.arm(ordinal, deadline);
         }
         Poll::Ready(fired_ordinal)
     }
@@ -119,14 +124,20 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn firing_order() {
-        let mut timer: MuxTimer<3> = MuxTimer::default();
+        let timer: MuxTimer<3> = MuxTimer::default();
+        pin!(timer);
+
         assert_eq!(timer.deadline(), None);
 
-        assert!(timer.fire_after(EVENT_C, Duration::from_millis(100)));
-        assert!(timer.fire_after(EVENT_B, Duration::from_millis(50)));
-        assert!(timer.fire_after(EVENT_A, Duration::from_millis(150)));
-
-        pin!(timer);
+        assert!(timer
+            .as_mut()
+            .fire_after(EVENT_C, Duration::from_millis(100)));
+        assert!(timer
+            .as_mut()
+            .fire_after(EVENT_B, Duration::from_millis(50)));
+        assert!(timer
+            .as_mut()
+            .fire_after(EVENT_A, Duration::from_millis(150)));
 
         let event = timer.as_mut().await;
         assert_eq!(event, EVENT_B);
@@ -143,13 +154,18 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn rearming() {
-        let mut timer: MuxTimer<3> = MuxTimer::default();
-
-        assert!(timer.fire_after(EVENT_A, Duration::from_millis(100)));
-        assert!(!timer.fire_after(EVENT_A, Duration::from_millis(200)));
-        assert!(timer.fire_after(EVENT_A, Duration::from_millis(50)));
-
+        let timer: MuxTimer<3> = MuxTimer::default();
         pin!(timer);
+
+        assert!(timer
+            .as_mut()
+            .fire_after(EVENT_A, Duration::from_millis(100)));
+        assert!(!timer
+            .as_mut()
+            .fire_after(EVENT_A, Duration::from_millis(200)));
+        assert!(timer
+            .as_mut()
+            .fire_after(EVENT_A, Duration::from_millis(50)));
 
         let event = timer.as_mut().await;
         assert_eq!(event, EVENT_A);
