@@ -6,7 +6,7 @@ edition = "2021"
 license = "Apache-2.0"
 keywords = ["tokio", "timer", "sleep", "multiplex", "deadline"]
 categories = ["asynchronous", "concurrency"]
-repository = "https://github.com/shikhar/tokio-muxt"
+repository = "https://github.com/s2-streamstore/tokio-muxt"
 
 [dependencies]
 pin-project = "1.1.5"
