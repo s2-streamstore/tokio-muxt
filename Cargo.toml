@@ -1,7 +1,7 @@
 [package]
 name = "tokio-muxt"
 description = "Timer for a limited set of events that multiplexes over a single tokio Sleep instance."
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "Apache-2.0"
 keywords = ["tokio", "timer", "sleep", "multiplex", "deadline"]
@@ -10,7 +10,7 @@ repository = "https://github.com/s2-streamstore/tokio-muxt"
 
 [dependencies]
 pin-project = "1.1.5"
-tokio = { version = "1.38.1", features = ["time"] }
+tokio = { version = "1.39.2", features = ["time"] }
 
 [dev-dependencies]
-tokio = { version = "1.38.1", features = ["full", "test-util"] }
+tokio = { version = "1.39.2", features = ["full", "test-util"] }
