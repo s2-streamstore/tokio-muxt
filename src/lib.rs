@@ -285,7 +285,6 @@ mod tests {
         assert_eq!(timer.deadline(), None);
     }
 
-
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn rearming_interleaved() {
@@ -308,7 +307,6 @@ mod tests {
             Duration::from_millis(50),
             CoalesceMode::Latest
         ));
-
 
         assert!(timer.as_mut().fire_after(
             EVENT_B,
