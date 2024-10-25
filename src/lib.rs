@@ -90,10 +90,10 @@ impl<'pin, const N: usize> MuxTimerProj<'pin, N> {
     }
 }
 
-/// Wait for the next event and return its ordinal.
+/// Wait for the next event and return its ordinal, along with that event's deadline.
 /// Panics if the timer is not armed.
 impl<const N: usize> Future for MuxTimer<N> {
-    type Output = usize;
+    type Output = (usize, Instant);
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         assert!(self.armed_ordinal < N);
@@ -105,7 +105,7 @@ impl<const N: usize> Future for MuxTimer<N> {
         if let Some((ordinal, deadline)) = this.soonest_event() {
             this.arm(ordinal, deadline);
         }
-        Poll::Ready(fired_ordinal)
+        Poll::Ready((fired_ordinal, fired_deadline))
     }
 }
 
@@ -139,13 +139,15 @@ mod tests {
             .as_mut()
             .fire_after(EVENT_A, Duration::from_millis(150)));
 
-        let event = timer.as_mut().await;
+        let (event, instant_b) = timer.as_mut().await;
         assert_eq!(event, EVENT_B);
 
-        let event = timer.as_mut().await;
+        let (event, instant_c) = timer.as_mut().await;
+        assert_eq!(instant_c.duration_since(instant_b).as_millis(), 50);
         assert_eq!(event, EVENT_C);
 
-        let event = timer.as_mut().await;
+        let (event, instant_a) = timer.as_mut().await;
+        assert_eq!(instant_a.duration_since(instant_c).as_millis(), 50);
         assert_eq!(event, EVENT_A);
 
         assert_eq!(timer.deadline(), None);
@@ -167,7 +169,7 @@ mod tests {
             .as_mut()
             .fire_after(EVENT_A, Duration::from_millis(50)));
 
-        let event = timer.as_mut().await;
+        let (event, _) = timer.as_mut().await;
         assert_eq!(event, EVENT_A);
         assert_eq!(timer.deadline(), None);
     }
