@@ -9,8 +9,8 @@ categories = ["asynchronous", "concurrency"]
 repository = "https://github.com/s2-streamstore/tokio-muxt"
 
 [dependencies]
-pin-project = "1.1.5"
-tokio = { version = "1.39.2", features = ["time"] }
+pin-project = "1.1.7"
+tokio = { version = "1.41.0", features = ["time"] }
 
 [dev-dependencies]
-tokio = { version = "1.39.2", features = ["full", "test-util"] }
+tokio = { version = "1.41.0", features = ["full", "test-util"] }
