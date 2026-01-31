@@ -367,6 +367,7 @@ mod tests {
         let timer: MuxTimer<3> = MuxTimer::default();
         pin!(timer);
 
+        let start = Instant::now();
         assert!(timer.as_mut().fire_after(
             EVENT_A,
             Duration::from_millis(100),
@@ -377,10 +378,124 @@ mod tests {
             .as_mut()
             .fire_after(EVENT_B, Duration::from_secs(1), CoalesceMode::Latest));
 
+        assert!(timer.is_armed());
         assert!(timer.as_mut().cancel(EVENT_A));
         assert!(!timer.as_mut().cancel(EVENT_A));
+        assert_eq!(
+            timer.deadline(),
+            Some(start + Duration::from_secs(1))
+        );
 
         let (event, _) = timer.as_mut().await;
         assert_eq!(event, EVENT_B);
+    }
+
+    #[tokio::main(flavor = "current_thread", start_paused = true)]
+    #[test]
+    async fn fire_at_respects_deadline() {
+        let timer: MuxTimer<2> = MuxTimer::default();
+        pin!(timer);
+
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(75);
+        assert!(timer
+            .as_mut()
+            .fire_at(EVENT_A, deadline, CoalesceMode::Earliest));
+        assert_eq!(timer.deadline(), Some(deadline));
+
+        let (event, fired_deadline) = timer.as_mut().await;
+        assert_eq!(event, EVENT_A);
+        assert_eq!(fired_deadline, deadline);
+        assert!(!timer.is_armed());
+    }
+
+    #[tokio::main(flavor = "current_thread", start_paused = true)]
+    #[test]
+    async fn rearming_latest_moves_to_other_ordinal() {
+        let timer: MuxTimer<2> = MuxTimer::default();
+        pin!(timer);
+
+        let start = Instant::now();
+        assert!(timer.as_mut().fire_after(
+            EVENT_A,
+            Duration::from_millis(100),
+            CoalesceMode::Latest
+        ));
+        assert!(timer.as_mut().fire_after(
+            EVENT_B,
+            Duration::from_millis(120),
+            CoalesceMode::Latest
+        ));
+        assert_eq!(timer.deadline(), Some(start + Duration::from_millis(100)));
+
+        assert!(timer.as_mut().fire_after(
+            EVENT_A,
+            Duration::from_millis(200),
+            CoalesceMode::Latest
+        ));
+        assert_eq!(timer.deadline(), Some(start + Duration::from_millis(120)));
+
+        let (event, instant) = timer.as_mut().await;
+        assert_eq!(event, EVENT_B);
+        assert_eq!(instant.duration_since(start), Duration::from_millis(120));
+    }
+
+    #[tokio::main(flavor = "current_thread", start_paused = true)]
+    #[test]
+    async fn deadlines_cleared_after_fire() {
+        let timer: MuxTimer<2> = MuxTimer::default();
+        pin!(timer);
+
+        let start = Instant::now();
+        assert!(timer.as_mut().fire_after(
+            EVENT_A,
+            Duration::from_millis(50),
+            CoalesceMode::Earliest
+        ));
+        assert!(timer.as_mut().fire_after(
+            EVENT_B,
+            Duration::from_millis(100),
+            CoalesceMode::Earliest
+        ));
+        assert!(timer.is_armed());
+        assert_eq!(
+            timer.deadlines(),
+            &[
+                Some(start + Duration::from_millis(50)),
+                Some(start + Duration::from_millis(100))
+            ]
+        );
+
+        let (event, _) = timer.as_mut().await;
+        assert_eq!(event, EVENT_A);
+        assert_eq!(timer.deadlines()[EVENT_A], None);
+        assert_eq!(
+            timer.deadlines()[EVENT_B],
+            Some(start + Duration::from_millis(100))
+        );
+
+        let (event, _) = timer.as_mut().await;
+        assert_eq!(event, EVENT_B);
+        assert_eq!(timer.deadlines()[EVENT_B], None);
+        assert!(!timer.is_armed());
+    }
+
+    #[tokio::main(flavor = "current_thread", start_paused = true)]
+    #[test]
+    async fn cancel_last_event_disarms() {
+        let timer: MuxTimer<1> = MuxTimer::default();
+        pin!(timer);
+
+        assert!(!timer.is_armed());
+        assert!(timer.as_mut().fire_after(
+            EVENT_A,
+            Duration::from_millis(100),
+            CoalesceMode::Earliest
+        ));
+        assert!(timer.is_armed());
+        assert!(timer.as_mut().cancel(EVENT_A));
+        assert!(!timer.is_armed());
+        assert_eq!(timer.deadline(), None);
+        assert_eq!(timer.deadlines()[EVENT_A], None);
     }
 }
