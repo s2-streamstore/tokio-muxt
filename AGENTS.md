@@ -1,0 +1,3 @@
+- Use `cargo +nightly fmt` to ensure formatting
+- Use `cargo nextest` as test runner
+- Use conventional commits and PR titles
