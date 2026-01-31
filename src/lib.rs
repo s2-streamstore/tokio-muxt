@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
     time::Duration,
 };
 
@@ -27,6 +27,7 @@ pub struct MuxTimer<const N: usize> {
 }
 
 /// How to handle coalescing deadlines for the same event ordinal.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CoalesceMode {
     /// Retain the earliest deadline for the event.
     Earliest,
@@ -59,6 +60,7 @@ impl<const N: usize> MuxTimer<N> {
 
     /// Fire timer for event with `ordinal` at `deadline`.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event and provided `CoalesceMode`.
+    #[allow(clippy::missing_panics_doc)]
     pub fn fire_at(
         self: Pin<&mut Self>,
         ordinal: impl Into<usize>,
@@ -77,23 +79,13 @@ impl<const N: usize> MuxTimer<N> {
         let mut this = self.project();
         this.deadlines[ordinal] = Some(deadline);
 
-        match coalesce_mode {
-            CoalesceMode::Earliest => {
-                if current_deadline.map_or(true, |d| deadline < d) {
-                    this.arm(ordinal, deadline)
-                }
-            }
-            CoalesceMode::Latest => {
-                if current_deadline.map_or(true, |d| deadline < d) {
-                    this.arm(ordinal, deadline);
-                } else if *this.armed_ordinal == ordinal {
-                    // The currently armed event is the one we are pushing back, so
-                    // rearm with the new soonest event.
-                    let (next_ordinal, next_deadline) =
-                        this.soonest_event().expect("soonest event");
-                    this.arm(next_ordinal, next_deadline);
-                }
-            }
+        if current_deadline.is_none_or(|d| deadline < d) {
+            this.arm(ordinal, deadline);
+        } else if coalesce_mode == CoalesceMode::Latest && *this.armed_ordinal == ordinal {
+            // The currently armed event is the one we are pushing back,
+            // so rearm with the new soonest event.
+            let (next_ordinal, next_deadline) = this.soonest_event().expect("soonest event");
+            this.arm(next_ordinal, next_deadline);
         }
         true
     }
@@ -115,7 +107,7 @@ impl<const N: usize> MuxTimer<N> {
                     // Cancelled the last event. Disarm the timer.
                     *this.armed_ordinal = N;
                 }
-            };
+            }
             true
         } else {
             false
@@ -123,7 +115,7 @@ impl<const N: usize> MuxTimer<N> {
     }
 
     /// Returns whether the timer is armed.
-    pub fn is_armed(&self) -> bool {
+    pub const fn is_armed(&self) -> bool {
         self.armed_ordinal < N
     }
 
@@ -133,12 +125,12 @@ impl<const N: usize> MuxTimer<N> {
     }
 
     /// Returns all current deadlines, which can be indexed by event ordinals.
-    pub fn deadlines(&self) -> &[Option<Instant>; N] {
+    pub const fn deadlines(&self) -> &[Option<Instant>; N] {
         &self.deadlines
     }
 }
 
-impl<'pin, const N: usize> MuxTimerProj<'pin, N> {
+impl<const N: usize> MuxTimerProj<'_, N> {
     fn arm(&mut self, ordinal: usize, deadline: Instant) {
         self.sleep.as_mut().reset(deadline);
         *self.armed_ordinal = ordinal;
@@ -374,9 +366,11 @@ mod tests {
             CoalesceMode::Latest
         ));
 
-        assert!(timer
-            .as_mut()
-            .fire_after(EVENT_B, Duration::from_secs(1), CoalesceMode::Latest));
+        assert!(
+            timer
+                .as_mut()
+                .fire_after(EVENT_B, Duration::from_secs(1), CoalesceMode::Latest)
+        );
 
         assert!(timer.is_armed());
         assert!(timer.as_mut().cancel(EVENT_A));
@@ -395,9 +389,11 @@ mod tests {
 
         let start = Instant::now();
         let deadline = start + Duration::from_millis(75);
-        assert!(timer
-            .as_mut()
-            .fire_at(EVENT_A, deadline, CoalesceMode::Earliest));
+        assert!(
+            timer
+                .as_mut()
+                .fire_at(EVENT_A, deadline, CoalesceMode::Earliest)
+        );
         assert_eq!(timer.deadline(), Some(deadline));
 
         let (event, fired_deadline) = timer.as_mut().await;

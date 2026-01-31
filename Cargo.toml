@@ -2,7 +2,7 @@
 name = "tokio-muxt"
 description = "Timer for a limited set of events that multiplexes over a single tokio Sleep instance."
 version = "0.6.1"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 keywords = ["tokio", "timer", "sleep", "multiplex", "deadline"]
 categories = ["asynchronous", "concurrency"]
@@ -15,3 +15,7 @@ tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
