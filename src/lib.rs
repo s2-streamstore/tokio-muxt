@@ -84,18 +84,14 @@ impl<const N: usize> MuxTimer<N> {
                 }
             }
             CoalesceMode::Latest => {
-                match current_deadline {
-                    None => this.arm(ordinal, deadline),
-                    Some(_) if *this.armed_ordinal == ordinal => {
-                        // The currently armed event is the one we are pushing back, so
-                        // rearm with the new soonest event.
-                        let (next_ordinal, next_deadline) =
-                            this.soonest_event().expect("soonest event");
-                        this.arm(next_ordinal, next_deadline);
-                    }
-                    Some(_) => {
-                        // There's a deadline, but it's not for the current ordinal, so do nothing.
-                    }
+                if current_deadline.map_or(true, |d| deadline < d) {
+                    this.arm(ordinal, deadline);
+                } else if *this.armed_ordinal == ordinal {
+                    // The currently armed event is the one we are pushing back, so
+                    // rearm with the new soonest event.
+                    let (next_ordinal, next_deadline) =
+                        this.soonest_event().expect("soonest event");
+                    this.arm(next_ordinal, next_deadline);
                 }
             }
         }
@@ -337,6 +333,32 @@ mod tests {
         assert_eq!(event, EVENT_A);
         assert_eq!(instant.duration_since(start), Duration::from_millis(200));
         assert_eq!(timer.deadline(), None);
+    }
+
+    #[tokio::main(flavor = "current_thread", start_paused = true)]
+    #[test]
+    async fn rearming_latest_earlier_other_ordinal() {
+        let timer: MuxTimer<2> = MuxTimer::default();
+        pin!(timer);
+
+        let start = Instant::now();
+        assert!(timer.as_mut().fire_after(
+            EVENT_A,
+            Duration::from_millis(100),
+            CoalesceMode::Latest
+        ));
+        assert_eq!(timer.deadline(), Some(start + Duration::from_millis(100)));
+
+        assert!(timer.as_mut().fire_after(
+            EVENT_B,
+            Duration::from_millis(50),
+            CoalesceMode::Latest
+        ));
+        assert_eq!(timer.deadline(), Some(start + Duration::from_millis(50)));
+
+        let (event, instant) = timer.as_mut().await;
+        assert_eq!(event, EVENT_B);
+        assert_eq!(instant.duration_since(start), Duration::from_millis(50));
     }
 
     #[tokio::main(flavor = "current_thread", start_paused = true)]
