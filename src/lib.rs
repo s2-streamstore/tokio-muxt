@@ -381,10 +381,7 @@ mod tests {
         assert!(timer.is_armed());
         assert!(timer.as_mut().cancel(EVENT_A));
         assert!(!timer.as_mut().cancel(EVENT_A));
-        assert_eq!(
-            timer.deadline(),
-            Some(start + Duration::from_secs(1))
-        );
+        assert_eq!(timer.deadline(), Some(start + Duration::from_secs(1)));
 
         let (event, _) = timer.as_mut().await;
         assert_eq!(event, EVENT_B);
