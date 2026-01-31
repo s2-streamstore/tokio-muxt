@@ -347,20 +347,14 @@ mod tests {
             Duration::from_millis(100),
             CoalesceMode::Latest
         ));
-        assert_eq!(
-            timer.deadline(),
-            Some(start + Duration::from_millis(100))
-        );
+        assert_eq!(timer.deadline(), Some(start + Duration::from_millis(100)));
 
         assert!(timer.as_mut().fire_after(
             EVENT_B,
             Duration::from_millis(50),
             CoalesceMode::Latest
         ));
-        assert_eq!(
-            timer.deadline(),
-            Some(start + Duration::from_millis(50))
-        );
+        assert_eq!(timer.deadline(), Some(start + Duration::from_millis(50)));
 
         let (event, instant) = timer.as_mut().await;
         assert_eq!(event, EVENT_B);
