@@ -1,7 +1,7 @@
 [package]
 name = "tokio-muxt"
 description = "Timer for a limited set of events that multiplexes over a single tokio Sleep instance."
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 license = "MIT"
 keywords = ["tokio", "timer", "sleep", "multiplex", "deadline"]
