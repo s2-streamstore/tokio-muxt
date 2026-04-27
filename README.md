@@ -26,7 +26,7 @@ const EVENT_B: usize = 1;
 
 #[tokio::main]
 async fn main() {
-    let timer: MuxTimer<2> = MuxTimer::default();
+    let timer: MuxTimer<2> = MuxTimer::new();
     pin!(timer);
 
     let start = Instant::now();
