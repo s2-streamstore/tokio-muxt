@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/s2-streamstore/tokio-muxt/compare/v0.7.0...v0.7.1) - 2026-04-27
+
+### Other
+
+- remove MuxTimer default constructor ([#15](https://github.com/s2-streamstore/tokio-muxt/pull/15))
+- upgrade and SHA-pin GitHub Actions dependencies ([#13](https://github.com/s2-streamstore/tokio-muxt/pull/13))
+
 ## [0.7.0](https://github.com/s2-streamstore/tokio-muxt/compare/v0.6.1...v0.7.0) - 2026-01-31
 
 ### Other
