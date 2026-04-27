@@ -10,6 +10,7 @@ use pin_project::pin_project;
 use tokio::time::{Instant, Sleep};
 
 /// Timer for a limited set of events that are represented by their ordinals.
+///
 /// It multiplexes over a single tokio [Sleep] instance.
 /// Deadlines for the same event are coalesced, either to the earliest or latest one, depending on the `CoalesceMode`, if it has not yet fired.
 ///
@@ -36,19 +37,28 @@ pub enum CoalesceMode {
     Latest,
 }
 
-impl<const N: usize> Default for MuxTimer<N> {
-    fn default() -> Self {
+impl<const N: usize> MuxTimer<N> {
+    /// Create a disarmed timer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there is no current Tokio runtime with time enabled.
+    #[allow(clippy::new_without_default)]
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             deadlines: [None; N],
             sleep: tokio::time::sleep(Duration::ZERO),
             armed_ordinal: N,
         }
     }
-}
 
-impl<const N: usize> MuxTimer<N> {
     /// Fire timer for event with `ordinal` after `timeout` duration.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event and provided `CoalesceMode`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ordinal` is out of bounds.
     pub fn fire_after(
         self: Pin<&mut Self>,
         ordinal: impl Into<usize>,
@@ -60,7 +70,10 @@ impl<const N: usize> MuxTimer<N> {
 
     /// Fire timer for event with `ordinal` at `deadline`.
     /// Returns `true` if the timer was armed, `false` if it was already armed for the same event and provided `CoalesceMode`.
-    #[allow(clippy::missing_panics_doc)]
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ordinal` is out of bounds.
     pub fn fire_at(
         self: Pin<&mut Self>,
         ordinal: impl Into<usize>,
@@ -177,10 +190,15 @@ mod tests {
     const EVENT_B: usize = 1;
     const EVENT_C: usize = 2;
 
+    #[test]
+    fn new_panics_without_tokio_runtime() {
+        assert!(std::panic::catch_unwind(MuxTimer::<1>::new).is_err());
+    }
+
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn firing_order() {
-        let timer: MuxTimer<3> = MuxTimer::default();
+        let timer: MuxTimer<3> = MuxTimer::new();
         pin!(timer);
 
         assert_eq!(timer.deadline(), None);
@@ -218,7 +236,7 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn rearming_earliest() {
-        let timer: MuxTimer<3> = MuxTimer::default();
+        let timer: MuxTimer<3> = MuxTimer::new();
         pin!(timer);
 
         let start = Instant::now();
@@ -247,7 +265,7 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn rearming_latest() {
-        let timer: MuxTimer<3> = MuxTimer::default();
+        let timer: MuxTimer<3> = MuxTimer::new();
         pin!(timer);
 
         let start = Instant::now();
@@ -276,7 +294,7 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn rearming_interleaved() {
-        let timer: MuxTimer<3> = MuxTimer::default();
+        let timer: MuxTimer<3> = MuxTimer::new();
         pin!(timer);
 
         let start = Instant::now();
@@ -296,11 +314,11 @@ mod tests {
             CoalesceMode::Latest
         ));
 
-        assert!(timer.as_mut().fire_after(
-            EVENT_B,
-            Duration::from_millis(1000),
-            CoalesceMode::Earliest,
-        ));
+        assert!(
+            timer
+                .as_mut()
+                .fire_after(EVENT_B, Duration::from_secs(1), CoalesceMode::Earliest,)
+        );
         assert!(timer.as_mut().fire_after(
             EVENT_B,
             Duration::from_millis(100),
@@ -330,7 +348,7 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn rearming_latest_earlier_other_ordinal() {
-        let timer: MuxTimer<2> = MuxTimer::default();
+        let timer: MuxTimer<2> = MuxTimer::new();
         pin!(timer);
 
         let start = Instant::now();
@@ -356,7 +374,7 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn cancellation() {
-        let timer: MuxTimer<3> = MuxTimer::default();
+        let timer: MuxTimer<3> = MuxTimer::new();
         pin!(timer);
 
         let start = Instant::now();
@@ -384,7 +402,7 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn fire_at_respects_deadline() {
-        let timer: MuxTimer<2> = MuxTimer::default();
+        let timer: MuxTimer<2> = MuxTimer::new();
         pin!(timer);
 
         let start = Instant::now();
@@ -405,7 +423,7 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn rearming_latest_moves_to_other_ordinal() {
-        let timer: MuxTimer<2> = MuxTimer::default();
+        let timer: MuxTimer<2> = MuxTimer::new();
         pin!(timer);
 
         let start = Instant::now();
@@ -436,7 +454,7 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn deadlines_cleared_after_fire() {
-        let timer: MuxTimer<2> = MuxTimer::default();
+        let timer: MuxTimer<2> = MuxTimer::new();
         pin!(timer);
 
         let start = Instant::now();
@@ -476,7 +494,7 @@ mod tests {
     #[tokio::main(flavor = "current_thread", start_paused = true)]
     #[test]
     async fn cancel_last_event_disarms() {
-        let timer: MuxTimer<1> = MuxTimer::default();
+        let timer: MuxTimer<1> = MuxTimer::new();
         pin!(timer);
 
         assert!(!timer.is_armed());
