@@ -12,11 +12,7 @@ use pin_project::pin_project;
 use tokio::time::{Instant, Sleep};
 
 // Same as tokio's fallback when `sleep` is given a duration that overflows `Instant`.
-#[expect(
-    clippy::duration_suboptimal_units,
-    reason = "`Duration::from_hours` requires Rust 1.91"
-)]
-const FAR_FUTURE: Duration = Duration::from_secs(86400 * 365 * 30);
+const FAR_FUTURE: Duration = Duration::from_hours(24 * 365 * 30);
 
 /// Timer for a limited set of events that are represented by their ordinals.
 ///
