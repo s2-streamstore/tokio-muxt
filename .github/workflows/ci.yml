@@ -28,6 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --all-features
+      - run: cargo test --doc --all-features
 
   clippy:
     name: Clippy

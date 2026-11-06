@@ -45,4 +45,4 @@ async fn main() {
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](https://github.com/s2-streamstore/tokio-muxt/blob/main/LICENSE)

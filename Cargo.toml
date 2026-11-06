@@ -14,6 +14,7 @@ pin-project = "1"
 tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 
 [lints.clippy]
