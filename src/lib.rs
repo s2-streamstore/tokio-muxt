@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use std::{
     future::Future,
     pin::Pin,
@@ -9,10 +11,14 @@ use pin_project::pin_project;
 
 use tokio::time::{Instant, Sleep};
 
+// Same as tokio's fallback when `sleep` is given a duration that overflows `Instant`.
+const FAR_FUTURE: Duration = Duration::from_hours(24 * 365 * 30);
+
 /// Timer for a limited set of events that are represented by their ordinals.
 ///
 /// It multiplexes over a single tokio [Sleep] instance.
 /// Deadlines for the same event are coalesced, either to the earliest or latest one, depending on the `CoalesceMode`, if it has not yet fired.
+/// An event fires when it is yielded by the timer's future, so until then it can be rescheduled or cancelled even if its deadline has passed.
 ///
 /// Deadlines are stored on a stack-allocated array of size `N`, and the ordinals are used to index into it,
 /// so the maximum supported ordinal will be `N - 1`. The implementation is designed for small `N` (think single digits).
@@ -28,7 +34,7 @@ pub struct MuxTimer<const N: usize> {
 }
 
 /// How to handle coalescing deadlines for the same event ordinal.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoalesceMode {
     /// Retain the earliest deadline for the event.
     Earliest,
@@ -54,7 +60,10 @@ impl<const N: usize> MuxTimer<N> {
     }
 
     /// Fire timer for event with `ordinal` after `timeout` duration.
-    /// Returns `true` if the timer was armed, `false` if it was already armed for the same event and provided `CoalesceMode`.
+    /// A `timeout` too large to represent is saturated to a far-future deadline.
+    ///
+    /// Returns `false`, leaving the timer unchanged, if the event already has a deadline that takes
+    /// precedence under `coalesce_mode`, and `true` otherwise.
     ///
     /// # Panics
     ///
@@ -65,11 +74,15 @@ impl<const N: usize> MuxTimer<N> {
         timeout: Duration,
         coalesce_mode: CoalesceMode,
     ) -> bool {
-        self.fire_at(ordinal, Instant::now() + timeout, coalesce_mode)
+        let now = Instant::now();
+        let deadline = now.checked_add(timeout).unwrap_or_else(|| now + FAR_FUTURE);
+        self.fire_at(ordinal, deadline, coalesce_mode)
     }
 
     /// Fire timer for event with `ordinal` at `deadline`.
-    /// Returns `true` if the timer was armed, `false` if it was already armed for the same event and provided `CoalesceMode`.
+    ///
+    /// Returns `false`, leaving the timer unchanged, if the event already has a deadline that takes
+    /// precedence under `coalesce_mode`, and `true` otherwise.
     ///
     /// # Panics
     ///
@@ -107,6 +120,10 @@ impl<const N: usize> MuxTimer<N> {
     /// otherwise.
     ///
     /// The timer will become disarmed if the last event is cancelled.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ordinal` is out of bounds.
     pub fn cancel(self: Pin<&mut Self>, ordinal: impl Into<usize>) -> bool {
         let ordinal = ordinal.into();
         if self.deadlines[ordinal].is_some() {
@@ -159,12 +176,15 @@ impl<const N: usize> MuxTimerProj<'_, N> {
 }
 
 /// Wait for the next event and return its ordinal, along with that event's deadline.
-/// Panics if the timer is not armed.
+///
+/// If the timer is disarmed, this stays pending until it is armed and polled again.
 impl<const N: usize> Future for MuxTimer<N> {
     type Output = (usize, Instant);
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        assert!(self.armed_ordinal < N);
+        if !self.is_armed() {
+            return Poll::Pending;
+        }
         let mut this = self.project();
         ready!(this.sleep.as_mut().poll(cx));
         let fired_ordinal = std::mem::replace(this.armed_ordinal, N);
@@ -182,9 +202,9 @@ mod tests {
     use std::time::Duration;
 
     use tokio::pin;
-    use tokio::time::Instant;
+    use tokio::time::{Instant, timeout};
 
-    use super::{CoalesceMode, MuxTimer};
+    use super::{CoalesceMode, FAR_FUTURE, MuxTimer};
 
     const EVENT_A: usize = 0;
     const EVENT_B: usize = 1;
@@ -508,5 +528,91 @@ mod tests {
         assert!(!timer.is_armed());
         assert_eq!(timer.deadline(), None);
         assert_eq!(timer.deadlines()[EVENT_A], None);
+    }
+
+    #[tokio::main(flavor = "current_thread", start_paused = true)]
+    #[test]
+    async fn disarmed_timer_is_pending() {
+        let timer: MuxTimer<1> = MuxTimer::new();
+        pin!(timer);
+
+        assert!(
+            timeout(Duration::from_secs(1), timer.as_mut())
+                .await
+                .is_err()
+        );
+
+        assert!(timer.as_mut().fire_after(
+            EVENT_A,
+            Duration::from_millis(100),
+            CoalesceMode::Earliest
+        ));
+        assert!(timer.as_mut().cancel(EVENT_A));
+        assert!(
+            timeout(Duration::from_secs(1), timer.as_mut())
+                .await
+                .is_err()
+        );
+
+        assert!(timer.as_mut().fire_after(
+            EVENT_A,
+            Duration::from_millis(100),
+            CoalesceMode::Earliest
+        ));
+        let (event, _) = timer.as_mut().await;
+        assert_eq!(event, EVENT_A);
+        assert!(
+            timeout(Duration::from_secs(1), timer.as_mut())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::main(flavor = "current_thread", start_paused = true)]
+    #[test]
+    async fn fire_after_saturates_on_overflow() {
+        let timer: MuxTimer<2> = MuxTimer::new();
+        pin!(timer);
+
+        let start = Instant::now();
+        assert!(
+            timer
+                .as_mut()
+                .fire_after(EVENT_A, Duration::MAX, CoalesceMode::Earliest)
+        );
+        assert_eq!(timer.deadline(), Some(start + FAR_FUTURE));
+
+        assert!(timer.as_mut().fire_after(
+            EVENT_B,
+            Duration::from_millis(10),
+            CoalesceMode::Earliest
+        ));
+        let (event, _) = timer.as_mut().await;
+        assert_eq!(event, EVENT_B);
+        assert_eq!(timer.deadline(), Some(start + FAR_FUTURE));
+    }
+
+    #[tokio::main(flavor = "current_thread", start_paused = true)]
+    #[test]
+    async fn elapsed_event_can_be_rescheduled_until_fired() {
+        let timer: MuxTimer<1> = MuxTimer::new();
+        pin!(timer);
+
+        let start = Instant::now();
+        assert!(timer.as_mut().fire_at(
+            EVENT_A,
+            start + Duration::from_millis(10),
+            CoalesceMode::Latest
+        ));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(timer.as_mut().fire_at(
+            EVENT_A,
+            start + Duration::from_millis(100),
+            CoalesceMode::Latest
+        ));
+
+        let (event, deadline) = timer.as_mut().await;
+        assert_eq!(event, EVENT_A);
+        assert_eq!(deadline, start + Duration::from_millis(100));
     }
 }
