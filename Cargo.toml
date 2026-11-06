@@ -8,6 +8,7 @@ keywords = ["tokio", "timer", "sleep", "multiplex", "deadline"]
 categories = ["asynchronous", "concurrency"]
 repository = "https://github.com/s2-streamstore/tokio-muxt"
 homepage = "https://github.com/s2-streamstore/tokio-muxt"
+exclude = [".github/", "AGENTS.md", "CLAUDE.md"]
 
 [dependencies]
 pin-project = "1"
